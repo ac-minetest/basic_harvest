@@ -41,10 +41,11 @@ harvest.forbidden_nodes = {
 local harvest_process = function(pos) -- burn fuel, dig, put materials in target container
 	
 	local meta = minetest.get_meta(pos);
-	local search_node = meta:get_string("filter");
+	local search_node = meta:get_string("dig");
+	local place_node = meta:get_string("place");
 
 	if search_node == "" or harvest.forbidden_nodes[search_node] then 
-		meta:set_string("infotext","error: right click harvester and set what to harvest by inserting item in FILTER");
+		meta:set_string("infotext","error: right click harvester and set what to harvest by inserting item in DIG");
 		return 
 	end
 	
@@ -71,7 +72,14 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 	local data = manip:get_data() -- Gets the data read into the VoxelManip object 
 	
 	local search_id = minetest.get_content_id(search_node);
-	local replace_id = minetest.get_content_id("air");
+	if place_node == "" then 
+		place_node = "air" 
+	elseif not minetest.registered_items[place_node] then
+		place_node = "air" 
+	end
+		
+	
+	local replace_id = minetest.get_content_id(place_node);
 
 	local count = 0
 	
@@ -87,6 +95,7 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 		return 
 	end
 	
+
 	-- CHECK FUEL
 	-- check for selected fuel source
 	local inv = meta:get_inventory();
@@ -117,20 +126,30 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 		meta:set_string("infotext", "error. target position " .. minetest.pos_to_string(tpos) .. " does not have inventory ");
 		return 
 	end
+	
+	-- CHECK TARGET INVENTORY FOR REPLACEMENT NODES when place_node~="air"
+	if place_node~= "air" then
+		if not tinv:contains_item("main", ItemStack(place_node .. " " .. count)) then
+			meta:set_string("infotext", "error. can not find enough replacement nodes, need " .. place_node .. " " .. count .. " in target main inventory ");
+			return;
+		end
+	end
 
-	-- TO DO: replace search_node with proper item drops
 	if not tinv:room_for_item("main", ItemStack(search_node .. " " .. count)) then
 		meta:set_string("infotext", "error. can not insert " .. search_node .. " " .. count .. " in target main inventory ");
 		return 
 	end	
 	
 	-- ALL OK: add items to target, burn fuel
-	--tinv:add_item("main", ItemStack(search_node .. " " .. count));
-	
+
+
+	-- 1. add harvested items
 	-- drop code emulation
 	local table = minetest.registered_items[search_node];
+	
 	if table~=nil then --put in chest
 		if table.drop~= nil then -- drop handling 
+			
 			if table.drop.items then
 			--handle drops better, emulation of drop code
 			local max_items = table.drop.max_items or 0;
@@ -145,7 +164,13 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 					
 					local count1 = math.floor(count/rare);
 					for _,v1 in pairs(v.items) do
+						local itemcount = string.find(v1, " "); -- handle cases where drop is written as "X itemcount"
+						if itemcount then
+							count1=count1*tonumber(string.sub(v1,itemcount));
+							v1 = string.sub(v1,1,itemcount-1);
+						end
 						tinv:add_item("main",ItemStack(v1 .. " " .. count1));
+						
 					end
 				end
 			else
@@ -156,15 +181,18 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 		end
 	end
 
+	-- 2. replace nodes if necessary
+	tinv:remove_item("main", ItemStack(place_node.. " " .. count));
 	
-	--burn fuel
+	-- 3. burn fuel
 	inv:remove_item("main", ItemStack(fuel_source.. " " .. fuel_need));
 	
-	-- Update map
+	-- 4. Update map
 	manip:set_data(data) -- Sets the data contents of the VoxelManip object 
 	manip:write_to_map() -- Writes the data loaded from the VoxelManip back to the map
 	manip:update_map() -- Update map after writing chunk back to map
-	
+	manip:update_liquids() -- this will trigger events like water flow
+		
 	meta:set_string("infotext", "Harvest cycle completed. Processed ".. count .. " items ");
 	meta:set_int("process",0); -- resets harvester - new cycle begins
 end
@@ -199,19 +227,21 @@ local harvester_update_meta = function(pos)
 		local meta = minetest.get_meta(pos);
 		local x1,y1,z1;
 		x1 = meta:get_int("x1"); y1 = meta:get_int("y1");z1 = meta:get_int("z1");
-		local filter = meta:get_string("filter");
+		local dig = meta:get_string("dig");
+		local place = meta:get_string("place");
 		
 		local list_name = "nodemeta:"..pos.x..','..pos.y..','..pos.z 
 		local form  = 
-		"size[8,10]" ..  -- width, height
+		"size[8,11]" ..  -- width, height
 		--"size[6,10]" ..  -- width, height
-		"label[0,0;FUEL SELECTOR]".."label[2,0;FILTER]"..
+		"label[0,0;FUEL SELECTOR]".."label[2,0;DIG]"..
 		"list["..list_name..";fuel_select;0.,0.5;1,1;]".. 
-		"list["..list_name..";filter;2.,0.5;1,1;]".. "field[3.25,0.75;2,1;filter;filter;"..filter.."]" ..
-		"field[5.25,0.75;1,1;x1;Target;"..x1.."] field[6.25,0.75;1,1;y1;;"..y1.."] field[7.25,0.75;1,1;z1;;"..z1.."]"..
-		"list["..list_name..";main;0.,1.5;8,4;]"..
-		"list[current_player;main;0,6;8,4;]"..
-		"button[8.5,0.5;1,1;OK;OK]";
+		"list["..list_name..";dig;2.,0.5;1,1;]".. "field[3.25,0.75;2,1;dig;dig;"..dig.."]" ..
+		"field[3.25,1.75;2,1;place;place;"..place.."]" ..
+		"field[5.25,0.75;1,1;x1;Target inventory (chest);"..x1.."] field[6.25,0.75;1,1;y1;;"..y1.."] field[7.25,0.75;1,1;z1;;"..z1.."]"..
+		"list["..list_name..";main;0.,2.5;8,4;]"..
+		"list[current_player;main;0,7;8,4;]";
+		--"button[8.5,0.5;1,1;OK;OK]";
 		meta:set_string("formspec", form);
 end
 
@@ -240,11 +270,11 @@ minetest.register_node("basic_harvest:harvester", {
 		
 		meta:set_int("x0",ppos.x);meta:set_int("y0",ppos.y);meta:set_int("z0",ppos.z);
 		
-		meta:set_string("infotext", "Harvester: To operate it insert fuel into FUEL_SELECTOR and main inventory, then insert item to be harvested into FILTER. After that just wait.")
+		meta:set_string("infotext", "Harvester: To operate it insert fuel into FUEL_SELECTOR and main inventory, then insert item to be harvested into DIG. After that just wait.")
 		meta:set_string("owner", placer:get_player_name());
 		
 		local inv = meta:get_inventory();
-		inv:set_size("filter", 1);
+		inv:set_size("dig", 1);
 		inv:set_size("main",32);
 		inv:set_size("fuel_select",1);
 	end,
@@ -261,8 +291,8 @@ minetest.register_node("basic_harvest:harvester", {
 		local privs = minetest.get_player_privs(player:get_player_name());
 		if minetest.is_protected(pos, player:get_player_name()) and not privs.privs then return 0 end 
 		
-		if listname == "filter" then
-			meta:set_string("filter", stack:get_name()) 
+		if listname == "dig" then
+			meta:set_string("dig", stack:get_name()) 
 			harvester_update_meta(pos);
 		end
 		return stack:get_count();
@@ -273,8 +303,8 @@ minetest.register_node("basic_harvest:harvester", {
 		local privs = minetest.get_player_privs(player:get_player_name());
 		if minetest.is_protected(pos, player:get_player_name()) and not privs.privs then return 0 end 
 		
-		if listname == "filter" then
-			meta:set_string("filter", "") 
+		if listname == "dig" then
+			meta:set_string("dig", "") 
 			harvester_update_meta(pos);
 		end
 		return stack:get_count();
@@ -290,8 +320,12 @@ minetest.register_node("basic_harvest:harvester", {
 		if minetest.is_protected(pos, sender:get_player_name()) then return end 
 		
 		local meta = minetest.get_meta(pos);
-		if fields.filter then
-			meta:set_string("filter",fields.filter)
+		if fields.dig then
+			meta:set_string("dig",fields.dig)
+		end
+		
+		if fields.place then
+			meta:set_string("place",fields.place)
 		end
 		
 		if fields.x1 then meta:set_int("x1",fields.x1) end
