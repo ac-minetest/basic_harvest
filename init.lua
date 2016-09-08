@@ -25,6 +25,9 @@ harvest.radius = 5; -- this should be protector radius
 harvest.full = 5; -- how many steps before new harvest cycle begins: so harvester is activated every 5x20s by default
 harvest.timestep = 20; -- how frequently to process harvesters ( default every 30 seconds )
 harvest.fuel_cost = 0.1; -- how many coal units to harvest 1 piece
+harvest.transport_cost = 0.01; -- how much to transport 1 unit of dug material 1 block distance to target inventory
+-- for example: to transport 10 units over distance 10 costs: transport_cost*10*10 =  1
+
 
 harvest.forbidden_nodes = {
 	["air"]=true,
@@ -54,6 +57,7 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 	local x1,y1,z1; -- container position
 	x1 = meta:get_int("x1");y1 = meta:get_int("y1");z1 = meta:get_int("z1");
 	local tpos =  {x=x1,y=y1,z=z1};
+	local distance = meta:get_int("distance")
 	
 	if minetest.is_protected(tpos, meta:get_string("owner")) then
 		meta:set_string("infotext", "error. target position " .. minetest.string_to_pos(tpos) .. " is protected.");
@@ -98,27 +102,7 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 
 	-- CHECK FUEL
 	-- check for selected fuel source
-	local inv = meta:get_inventory();
-	local fuel_source = inv:get_stack("fuel_select",1):get_name();
-	
-	
-	local fueladd, afterfuel = minetest.get_craft_result({method = "fuel", width = 1, items = inv:get_list("fuel_select") }) 
-	local fuel_need;
-	local caloric_value = fueladd.time or 0; -- equals 1 for default:coal_lump
-	caloric_value = caloric_value / 40;
-	fuel_need = harvest.fuel_cost*count;
-	
-	if caloric_value <= 0 then 
-		meta:set_string("infotext","error. insert proper fuel into FUEL SELECTOR.")
-		return
-	end
-	
-	fuel_need = math.ceil(fuel_need/caloric_value);
-	
-	if not inv:contains_item("main", ItemStack(fuel_source .. " " .. fuel_need)) then
-		meta:set_string("infotext", "not enough fuel. Need ".. fuel_need .. " pieces of " .. fuel_source .. " in main inventory of harvester ");
-		return;
-	end
+
 	
 	-- CHECK TARGET INVENTORY
 	local tinv = minetest.get_meta(tpos):get_inventory();
@@ -127,6 +111,28 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 		return 
 	end
 	
+	local inv = minetest.get_meta(pos):get_inventory();
+	local fuel_source = inv:get_stack("fuel_select",1):get_name();
+	
+	local fueladd, afterfuel = minetest.get_craft_result({method = "fuel", width = 1, items = inv:get_list("fuel_select") }) 
+	local fuel_need;
+	local caloric_value = fueladd.time or 0; -- equals 1 for default:coal_lump
+	caloric_value = caloric_value / 40;
+	fuel_need = (harvest.fuel_cost+harvest.transport_cost*distance)*count;
+	
+	if caloric_value <= 0 then 
+		meta:set_string("infotext","error. insert proper fuel into FUEL SELECTOR.")
+		return
+	end
+	
+	fuel_need = math.ceil(fuel_need/caloric_value);
+	
+	if not tinv:contains_item("main", ItemStack(fuel_source .. " " .. fuel_need)) then
+		meta:set_string("infotext", "not enough fuel. Need ".. fuel_need .. " pieces of " .. fuel_source .. " in selected main inventory at " .. minetest.pos_to_string(tpos));
+		return;
+	end
+	
+
 	-- CHECK TARGET INVENTORY FOR REPLACEMENT NODES when place_node~="air"
 	if place_node~= "air" then
 		if not tinv:contains_item("main", ItemStack(place_node .. " " .. count)) then
@@ -185,7 +191,7 @@ local harvest_process = function(pos) -- burn fuel, dig, put materials in target
 	tinv:remove_item("main", ItemStack(place_node.. " " .. count));
 	
 	-- 3. burn fuel
-	inv:remove_item("main", ItemStack(fuel_source.. " " .. fuel_need));
+	tinv:remove_item("main", ItemStack(fuel_source.. " " .. fuel_need));
 	
 	-- 4. Update map
 	manip:set_data(data) -- Sets the data contents of the VoxelManip object 
@@ -238,7 +244,7 @@ local harvester_update_meta = function(pos)
 		"list["..list_name..";fuel_select;0.,0.5;1,1;]".. 
 		"list["..list_name..";dig;2.,0.5;1,1;]".. "field[3.25,0.75;2,1;dig;dig;"..dig.."]" ..
 		"field[3.25,1.75;2,1;place;place;"..place.."]" ..
-		"field[5.25,0.75;1,1;x1;Target inventory (chest);"..x1.."] field[6.25,0.75;1,1;y1;;"..y1.."] field[7.25,0.75;1,1;z1;;"..z1.."]"..
+		"field[5.25,0.75;1,1;x1;inventory;"..x1.."] field[6.25,0.75;1,1;y1;;"..y1.."] field[7.25,0.75;1,1;z1;;"..z1.."]"..
 		"list["..list_name..";main;0.,2.5;8,4;]"..
 		"list[current_player;main;0,7;8,4;]";
 		--"button[8.5,0.5;1,1;OK;OK]";
@@ -328,9 +334,15 @@ minetest.register_node("basic_harvest:harvester", {
 			meta:set_string("place",fields.place)
 		end
 		
-		if fields.x1 then meta:set_int("x1",fields.x1) end
-		if fields.y1 then meta:set_int("y1",fields.y1) end
-		if fields.z1 then meta:set_int("z1",fields.z1) end
+		local update_dist = false;
+		if fields.x1 then meta:set_int("x1",fields.x1);update_dist = true; end
+		if fields.y1 then meta:set_int("y1",fields.y1);update_dist = true; end
+		if fields.z1 then meta:set_int("z1",fields.z1);update_dist = true; end
+		
+		if update_dist then 
+			local dist = math.sqrt((pos.x - meta:get_int("x1"))^2+(pos.y - meta:get_int("y1"))^2+(pos.z - meta:get_int("z1"))^2);
+			meta:set_int("distance", dist);
+		end
 		
 		harvester_update_meta(pos);
 		
